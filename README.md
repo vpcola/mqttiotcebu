@@ -1,11 +1,17 @@
 # MQTT Secure via HTTPS Websocket Example
 
-Uses an mbedTLS socket to make a very simple HTTPS request over a secure connection, including verifying the server TLS certificate.
-You have to use a seperate MQTT Broker. Setting up your own like mosquitto (with SSL/TLS) maybe on raspberian or ubuntu or use one on the Cloud like iot.eclipse.org (even encpryted, this is public!), 
-test.mosquitto.org (also public) or coudmqtt.com (your private one) or others. 
+Uses an mbedTLS socket to make a very simple SSL/TLS request over a secure connection, including verifying the server TLS certificate. The MQTT Broker being used here is mqtt.iotcebu.com, an MQTT broker open for use with the IOT Cebu community. You can also use this example to connect to your own broker or to readily available cloud mqtt brokers - iot.eclipse.org, test.mosquitto.org or cloudmqtt.com, etc. - you would have to modify cert.c and replace it with the server certificate you are connecting to. 
+
+Note for mqtt.iotcebu.com: 
+
+To request for access, send and email to vpcola@gmail.com, and I will grant access as soon as I can. The MQTT broker does not verify client certificates and uses the usual username/password to logon to mqtt. There are rules governing which topic you are allowed to publish/subscribe so please pay attention to the email that will be sent after you have requested access. A secure MQTT port (8883) and a separate secure websocket (8083) is also available. The good thing about mqtt.iotcebu.com is that all your mqtt messages are backed up on a database (mysql), where you have read/write access to the database upon approval of your request.
+
+## Credits to the Original Source
+* The source code was adapted from pcbreflux - https://github.com/pcbreflux/espressif/tree/master/esp32/app/ESP32_mqtts_gpio
+* I only modified a few sections of the base code to adapt to my setup.
 
 ## Example MQTT
-* Send Topic iotcebu/<username> Message <custom message>  to switch first GPIO 19 ON (-> 100%)
+* Send Topic iotcebu/<username> Message <0 - 100>  to switch first GPIO 19 ON (100 == 100% duty cycle)
 
 ## esp-idf used
 * commit fd3ef4cdfe1ce747ef4757205f4bb797b099c9d9
