@@ -112,81 +112,101 @@ static const char *TAG = "MQTTS";
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 EventGroupHandle_t wifi_event_group;
 
+typedef struct SensorData {
+    float temperature;
+    float humidity;
+}xSensorData;
+
+typedef struct QueueMessage {
+    char messageType;
+    union {
+        xSensorData sensorData;
+        char data[20];
+    }messagePayload;
+}xQueueMessage;
+
+typedef enum MessageType
+{
+    SENSOR_UPDATE = 0,
+    SWITCH_UPDATE,
+}xMessageType;
+
+
 /**
-* @brief i2c master initialization
-*/
+ * @brief i2c master initialization
+ */
 static void i2c_master_init()
 {
-   int i2c_master_port = I2C_MASTER_NUM;
-   i2c_config_t conf;
-   conf.mode = I2C_MODE_MASTER;
-   conf.sda_io_num = I2C_MASTER_SDA_IO;
-   conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-   conf.scl_io_num = I2C_MASTER_SCL_IO;
-   conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-   conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
-   i2c_param_config(i2c_master_port, &conf);
-   i2c_driver_install(i2c_master_port, conf.mode,
-                      I2C_MASTER_RX_BUF_DISABLE,
-                      I2C_MASTER_TX_BUF_DISABLE, 0);
+    int i2c_master_port = I2C_MASTER_NUM;
+    i2c_config_t conf;
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = I2C_MASTER_SDA_IO;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_io_num = I2C_MASTER_SCL_IO;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
+    i2c_param_config(i2c_master_port, &conf);
+    i2c_driver_install(i2c_master_port, conf.mode,
+            I2C_MASTER_RX_BUF_DISABLE,
+            I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
 
 /**
-* @brief test code to read esp-i2c-slave
-*        We need to fill the buffer of esp slave device, then master can read them out.
-*
-* _______________________________________________________________________________________
-* | start | slave_addr + rd_bit +ack | read n-1 bytes + ack | read 1 byte + nack | stop |
-* --------|--------------------------|----------------------|--------------------|------|
-*
-*/
+ * @brief test code to read esp-i2c-slave
+ *        We need to fill the buffer of esp slave device, then master can read them out.
+ *
+ * _______________________________________________________________________________________
+ * | start | slave_addr + rd_bit +ack | read n-1 bytes + ack | read 1 byte + nack | stop |
+ * --------|--------------------------|----------------------|--------------------|------|
+ *
+ */
 static esp_err_t i2c_master_read_slave(i2c_port_t i2c_num, uint8_t slaveaddr, uint8_t* data_rd, size_t size)
 {
-   if (size == 0) {
-       return ESP_OK;
-   }
-   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-   i2c_master_start(cmd);
-   i2c_master_write_byte(cmd, ( slaveaddr << 1 ) | I2C_MASTER_READ, ACK_CHECK_EN);
-   if (size > 1) {
-       i2c_master_read(cmd, data_rd, size - 1, ACK_VAL);
-   }
-   i2c_master_read_byte(cmd, data_rd + size - 1, NACK_VAL);
-   i2c_master_stop(cmd);
-   esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
-   i2c_cmd_link_delete(cmd);
-   return ret;
+    if (size == 0) {
+        return ESP_OK;
+    }
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, ( slaveaddr << 1 ) | I2C_MASTER_READ, ACK_CHECK_EN);
+    if (size > 1) {
+        i2c_master_read(cmd, data_rd, size - 1, ACK_VAL);
+    }
+    i2c_master_read_byte(cmd, data_rd + size - 1, NACK_VAL);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
+    i2c_cmd_link_delete(cmd);
+    return ret;
 }
 
 /**
-* @brief Test code to write esp-i2c-slave
-*        Master device write data to slave(both esp32),
-*        the data will be stored in slave buffer.
-*        We can read them out from slave buffer.
-*
-* ___________________________________________________________________
-* | start | slave_addr + wr_bit + ack | write n bytes + ack  | stop |
-* --------|---------------------------|----------------------|------|
-*
-*/
+ * @brief Test code to write esp-i2c-slave
+ *        Master device write data to slave(both esp32),
+ *        the data will be stored in slave buffer.
+ *        We can read them out from slave buffer.
+ *
+ * ___________________________________________________________________
+ * | start | slave_addr + wr_bit + ack | write n bytes + ack  | stop |
+ * --------|---------------------------|----------------------|------|
+ *
+ */
 static esp_err_t i2c_master_write_slave(i2c_port_t i2c_num, uint8_t slaveaddr, uint8_t* data_wr, size_t size)
 {
-   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-   i2c_master_start(cmd);
-   i2c_master_write_byte(cmd, ( slaveaddr << 1 ) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-   i2c_master_write(cmd, data_wr, size, ACK_CHECK_EN);
-   i2c_master_stop(cmd);
-   esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
-   i2c_cmd_link_delete(cmd);
-   return ret;
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, ( slaveaddr << 1 ) | I2C_MASTER_WRITE, ACK_CHECK_EN);
+    i2c_master_write(cmd, data_wr, size, ACK_CHECK_EN);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
+    i2c_cmd_link_delete(cmd);
+    return ret;
 }
 
 /**
-* @brief Initialize the MCP23017 port expander
-*        First set the register 0x00 (IODIRA) for output (0x00),
-*        then set the register 0x01 (IODIRB) for input (0xFF)
-**/
+ * @brief Initialize the MCP23017 port expander
+ *        First set the register 0x00 (IODIRA) for output (0x00),
+ *        then set the register 0x01 (IODIRB) for input (0xFF)
+ **/
 static void mcp23017_setup(i2c_port_t i2cnum)
 {
     uint8_t data[2];
@@ -275,18 +295,18 @@ static void mqtt_message_handler(MessageData *md) {
     ESP_LOGI(TAG, "Topic received!: %.*s %.*s", md->topicName->lenstring.len, md->topicName->lenstring.data, md->message->payloadlen, (char*)md->message->payload);
     gpoinum[0]=*(md->topicName->lenstring.data+md->topicName->lenstring.len-1);
     gpoinum[1]='\0';
-    
+
     sprintf(dutynum,"%.*s",md->message->payloadlen, (char*)md->message->payload);
     ret=str2unit8(&gpio,(const char *)gpoinum);
     if (ret!=0) {
-       gpio=0;
+        gpio=0;
     }
     if (gpio>=led_cnt) {
-       gpio=led_cnt-1;
+        gpio=led_cnt-1;
     }
     str2unit8(&duty,(const char *)dutynum);
     if (ret!=0) {
-       duty=0;
+        duty=0;
     }
 
     ESP_LOGI(TAG, "setLED!: %d %d %d %s %d", led_pin[gpio], gpio, duty,gpoinum,md->topicName->lenstring.len);
@@ -323,8 +343,6 @@ void setLED(int gpio_num,uint8_t ledchan,uint8_t duty) {
 static void mqtt_task(void *pvParameters)
 {
     int ret;
-    float temperature = 0.0;
-    float humidity = 0.0;
 
     Network network;
 
@@ -396,12 +414,14 @@ static void mqtt_task(void *pvParameters)
 #if defined(MQTT_TASK)
         if ((ret = MQTTStartTask(&client)) != pdPASS)
         {
-                    ESP_LOGE(TAG,"Return code from start tasks is %d\n", ret);
+            ESP_LOGE(TAG,"Return code from start tasks is %d\n", ret);
         }
         ESP_LOGI(TAG, "MQTT Task started!\n");
 #endif
 
-            // ESP_LOGI(TAG, "MQTTYield  ...");
+        char msgbuf[200];
+        xQueueMessage msg;
+        // ESP_LOGI(TAG, "MQTTYield  ...");
         while(1) {
 #if !defined(MQTT_TASK)
             ret = MQTTYield(&client, (data.keepAliveInterval+1)*1000);
@@ -410,48 +430,11 @@ static void mqtt_task(void *pvParameters)
                 goto exit;
             }
 #endif
-            char msgbuf[200];
-            // Read the sensor and publish data to MQTT 
-            int i = 0;
-            do{
-                ret = readDHT();
-                if (ret != DHT_OK)
-                    errorHandler(ret);
-                else
-                {
-                    temperature = getTemperature();
-                    humidity = getHumidity();
-
-                    ESP_LOGI(TAG, "Temperature : %.1f", temperature);
-                    ESP_LOGI(TAG, "Humidity : %.1f", humidity);
-                    break;
-                }
-
-                vTaskDelay(300 / portTICK_PERIOD_MS);
-                i++;
-            }while((ret != DHT_OK) && (i < 5)); // Number of retries = 5
-
-            if (ret == DHT_OK)
+            if (xQueueReceive(xQueue, &msg, portMAX_DELAY))
             {
-                // Publish if we are able to get data from the sensor
-                MQTTMessage message;
-                sprintf(msgbuf, "{\"temperature\":%.1f,\"humidity\":%.1f}", temperature, humidity);
-
-                ESP_LOGI(TAG, "MQTTPublish  ... %s",msgbuf);
-                message.qos = QOS0;
-                message.retained = false;
-                message.dup = false;
-                message.payload = (void*)msgbuf;
-                message.payloadlen = strlen(msgbuf)+1;
-
-                ret = MQTTPublish(&client, "iotcebu/vergil/weather", &message);
-                if (ret != SUCCESS) {
-                    ESP_LOGI(TAG, "MQTTPublish not SUCCESS: %d", ret);
-                    goto exit;
-                }
+                // Do something with data received
             }
-
-                    // Wait until signalled and publish data
+            // Wait until signalled and publish data
             vTaskDelay( 3000 / portTICK_RATE_MS );
 
         }
@@ -466,12 +449,12 @@ exit:
 
 
 /**
-* @brief The led counter thread. This just to show
-*        how we can use the mcp23017 to expand our
-*        GPIOs. This task shows nothing more than
-*        incrementing the value of the output port A
-*        of the port expander.
-**/
+ * @brief The led counter thread. This just to show
+ *        how we can use the mcp23017 to expand our
+ *        GPIOs. This task shows nothing more than
+ *        incrementing the value of the output port A
+ *        of the port expander.
+ **/
 static void i2c_led_task(void* arg)
 {
     uint8_t i = 0;
@@ -485,10 +468,57 @@ static void i2c_led_task(void* arg)
         i2c_master_write_slave(I2C_MASTER_NUM, MCP23017_ADDR, &data[0], 2);
         i++;
         data[1] = i;
-        
+
         vTaskDelay( 200 / portTICK_RATE_MS);
     }
 }
+
+static void dht_task(void* arg)
+{
+    int ret = 0;
+    float temperature = 0.0;
+    float humidity = 0.0;
+
+    setDHTgpio(DHT22_IO);
+    while(1)
+    {
+        int i = 0;
+        do{
+            ret = readDHT();
+            if (ret != DHT_OK)
+                errorHandler(ret);
+            else
+            {
+                temperature = getTemperature();
+                humidity = getHumidity();
+
+                ESP_LOGI(TAG, "Temperature : %.1f", temperature);
+                ESP_LOGI(TAG, "Humidity : %.1f", humidity);
+                break;
+            }
+
+            vTaskDelay(300 / portTICK_PERIOD_MS);
+            i++;
+        }while((ret != DHT_OK) && (i < 5)); // Number of retries = 5
+
+        // Push the values into the queue
+        if (ret == DHT_OK)
+        {
+            xQueueMessage msg;
+
+            msg.messageType = SENSOR_UPDATE;
+            msg.messagePayload.sensorData.temperature = temperature;
+            msg.messagePayload.sensorData.humidity = humidity;
+            // Send to the queue, don't block if the queue is already
+            // full
+            xQueueSend(xQueue, &msg, ( TickType_t ) 0);
+        }
+
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
+
 
 void app_main()
 {
@@ -500,9 +530,10 @@ void app_main()
     mcp23017_setup(I2C_MASTER_NUM);
 
     // Create the queue
-    xQueue = xQueueCreate( mainQUEUE_LENGTH, sizeof( unsigned long ) );
+    xQueue = xQueueCreate( mainQUEUE_LENGTH, sizeof( xQueueMessage ) );
 
     xTaskCreate(&mqtt_task, "mqtt_task", 12288, NULL, 5, NULL);
     xTaskCreate(i2c_led_task, "i2c_led_task", 1024 * 2, (void* ) 0, 10, NULL);
+    xTaskCreate(dht_task, "dht_task", 1024, (void* ) 0, 10, NULL);
 
 }
