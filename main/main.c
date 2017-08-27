@@ -30,6 +30,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
@@ -94,8 +95,10 @@ const int CONNECTED_BIT = BIT0;
 #define MCP23017_ADDR   0x20
 
 #define DHT22_IO   4
+#define mainQUEUE_LENGTH 10
 
-xSemaphoreHandle print_mux;
+static xSemaphoreHandle print_mux;
+static QueueHandle_t xQueue = NULL;
 
 
 static uint8_t led_pin[] = { 16, 17 };
@@ -320,6 +323,9 @@ void setLED(int gpio_num,uint8_t ledchan,uint8_t duty) {
 static void mqtt_task(void *pvParameters)
 {
     int ret;
+    float temperature = 0.0;
+    float humidity = 0.0;
+
     Network network;
 
     while(1) {
@@ -386,13 +392,68 @@ static void mqtt_task(void *pvParameters)
             ESP_LOGI(TAG, "MQTTSubscribe: %d", ret);
             goto exit;
         }
-        ESP_LOGI(TAG, "MQTTYield  ...");
+
+#if defined(MQTT_TASK)
+        if ((ret = MQTTStartTask(&client)) != pdPASS)
+        {
+                    ESP_LOGE(TAG,"Return code from start tasks is %d\n", ret);
+        }
+        ESP_LOGI(TAG, "MQTT Task started!\n");
+#endif
+
+            // ESP_LOGI(TAG, "MQTTYield  ...");
         while(1) {
+#if !defined(MQTT_TASK)
             ret = MQTTYield(&client, (data.keepAliveInterval+1)*1000);
             if (ret != SUCCESS) {
                 ESP_LOGI(TAG, "MQTTYield: %d", ret);
                 goto exit;
             }
+#endif
+            char msgbuf[200];
+            // Read the sensor and publish data to MQTT 
+            int i = 0;
+            do{
+                ret = readDHT();
+                if (ret != DHT_OK)
+                    errorHandler(ret);
+                else
+                {
+                    temperature = getTemperature();
+                    humidity = getHumidity();
+
+                    ESP_LOGI(TAG, "Temperature : %.1f", temperature);
+                    ESP_LOGI(TAG, "Humidity : %.1f", humidity);
+                    break;
+                }
+
+                vTaskDelay(300 / portTICK_PERIOD_MS);
+                i++;
+            }while((ret != DHT_OK) && (i < 5)); // Number of retries = 5
+
+            if (ret == DHT_OK)
+            {
+                // Publish if we are able to get data from the sensor
+                MQTTMessage message;
+                sprintf(msgbuf, "{\"temperature\":%.1f,\"humidity\":%.1f}", temperature, humidity);
+
+                ESP_LOGI(TAG, "MQTTPublish  ... %s",msgbuf);
+                message.qos = QOS0;
+                message.retained = false;
+                message.dup = false;
+                message.payload = (void*)msgbuf;
+                message.payloadlen = strlen(msgbuf)+1;
+
+                ret = MQTTPublish(&client, "iotcebu/vergil/weather", &message);
+                if (ret != SUCCESS) {
+                    ESP_LOGI(TAG, "MQTTPublish not SUCCESS: %d", ret);
+                    goto exit;
+                }
+            }
+
+                    // Wait until signalled and publish data
+            vTaskDelay( 3000 / portTICK_RATE_MS );
+
         }
 exit:
         MQTTDisconnect(&client);
@@ -429,57 +490,19 @@ static void i2c_led_task(void* arg)
     }
 }
 
-/**
-* @brief Continously read the temperature and humidity sensor
-*
-**/
-static void dht22_task(void * arg)
-{
-    int ret;
-    float temperature = 0.0;
-    float humidity = 0.0;
-
-    setDHTgpio(DHT22_IO);
-    while(1)
-    {
-        ret = readDHT();
-        if (ret != DHT_OK)
-            errorHandler(ret);
-        else
-        {
-            temperature = getTemperature();
-            humidity = getHumidity();
-
-            ESP_LOGI(TAG, "Temperature : %.1f", temperature);
-            ESP_LOGI(TAG, "Humidity : %.1f", humidity);
-        }
-
-        // -- wait at least 2 sec before reading again ------------
-        // The interval of whole process must be beyond 2 seconds !! 
-        vTaskDelay( 3000 / portTICK_RATE_MS );
-    }
-}
-
-
 void app_main()
 {
-    uint8_t i = 0;
+
     nvs_flash_init();
     i2c_master_init();
     initialise_wifi();
 
     mcp23017_setup(I2C_MASTER_NUM);
 
+    // Create the queue
+    xQueue = xQueueCreate( mainQUEUE_LENGTH, sizeof( unsigned long ) );
+
     xTaskCreate(&mqtt_task, "mqtt_task", 12288, NULL, 5, NULL);
     xTaskCreate(i2c_led_task, "i2c_led_task", 1024 * 2, (void* ) 0, 10, NULL);
-    xTaskCreate(dht22_task, "dht22_task", 1024 * 2, (void *) 0, 10, NULL);
 
-    //gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
-    //int level = 0;
-    while (true) {
-        //gpio_set_level(GPIO_NUM_4, level);
-        //level = !level;
-        i++;
-        vTaskDelay(300 / portTICK_PERIOD_MS);
-    }
 }

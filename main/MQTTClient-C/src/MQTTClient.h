@@ -33,8 +33,13 @@
   #define DLLExport
 #endif
 
+#define MQTT_TASK 1
+
 //#include "MQTTopenssl.h"
 #include "MQTTmbedtls.h"
+#if defined(MQTT_TASK)
+#include "MQTTFreeRTOS.h"
+#endif
 //#include "MQTTLinux.h"
 #include "MQTTPacket.h"
 #include "stdio.h"
