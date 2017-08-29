@@ -71,6 +71,8 @@
    to the AP with an IP? */
 const int CONNECTED_BIT = BIT0;
 
+const int MQTT_READY_BIT = BIT0;
+
 /* Constants that aren't configurable in menuconfig */
 #define MQTT_SERVER "mqtt.iotcebu.com"
 #define MQTT_USER "vergil"
@@ -111,6 +113,7 @@ static const char *TAG = "MQTTS";
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 EventGroupHandle_t wifi_event_group;
+EventGroupHandle_t mqtt_event_group;
 
 typedef struct SensorData {
     float temperature;
@@ -418,6 +421,9 @@ static void mqtt_task(void *pvParameters)
         }
         ESP_LOGI(TAG, "MQTT Task started!\n");
 #endif
+        // Mark MQTT listeners we are ready
+        xEventGroupSetBits(mqtt_event_group, MQTT_READY_BIT);
+
 
         char msgbuf[200];
         xQueueMessage msg;
@@ -432,11 +438,35 @@ static void mqtt_task(void *pvParameters)
 #endif
             if (xQueueReceive(xQueue, &msg, portMAX_DELAY))
             {
-                // Do something with data received
-            }
-            // Wait until signalled and publish data
-            vTaskDelay( 3000 / portTICK_RATE_MS );
+                switch(msg.messageType)
+                {
+                    case SENSOR_UPDATE:
+                        sprintf(msgbuf, "{\"temperature\":%.1f,\"humidity\":%.1f}", 
+                            msg.messagePayload.sensorData.temperature, 
+                            msg.messagePayload.sensorData.humidity);
+                        ESP_LOGI(TAG, "Tasked received sensor update [%s]", msgbuf);
+                        break;
+                    default:
+                        ESP_LOGI(TAG, "Invalid message Type!");
+                        continue;
+                }
 
+                // Do something with data received
+                MQTTMessage message;
+
+                ESP_LOGI(TAG, "MQTTPublish  ... %s",msgbuf);
+                message.qos = QOS0;
+                message.retained = false;
+                message.dup = false;
+                message.payload = (void*)msgbuf;
+                message.payloadlen = strlen(msgbuf)+1;
+
+                ret = MQTTPublish(&client, "iotcebu/vergil/weather", &message);
+                if (ret != SUCCESS) {
+                    ESP_LOGI(TAG, "MQTTPublish not SUCCESS: %d", ret);
+                    goto exit;
+                }
+            }
         }
 exit:
         MQTTDisconnect(&client);
@@ -479,6 +509,10 @@ static void dht_task(void* arg)
     float temperature = 0.0;
     float humidity = 0.0;
 
+    // Wait untill mqtt is ready 
+    xEventGroupWaitBits(mqtt_event_group, MQTT_READY_BIT,
+        false, true, portMAX_DELAY);
+
     setDHTgpio(DHT22_IO);
     while(1)
     {
@@ -514,7 +548,7 @@ static void dht_task(void* arg)
             xQueueSend(xQueue, &msg, ( TickType_t ) 0);
         }
 
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        vTaskDelay(10000 / portTICK_PERIOD_MS);
     }
 }
 
@@ -531,6 +565,7 @@ void app_main()
 
     // Create the queue
     xQueue = xQueueCreate( mainQUEUE_LENGTH, sizeof( xQueueMessage ) );
+    mqtt_event_group = xEventGroupCreate();
 
     xTaskCreate(&mqtt_task, "mqtt_task", 12288, NULL, 5, NULL);
     xTaskCreate(i2c_led_task, "i2c_led_task", 1024 * 2, (void* ) 0, 10, NULL);
